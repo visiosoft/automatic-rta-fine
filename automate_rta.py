@@ -86,7 +86,7 @@ def save_to_mongodb(fines_data, total_amount):
             {
                 "$set": {
                     "total_amount": total_amount,
-                    "last_updated": datetime.now()
+                    "last_updated": datetime.utcnow()
                 }
             },
             upsert=True
