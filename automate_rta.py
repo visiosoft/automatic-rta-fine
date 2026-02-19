@@ -53,48 +53,39 @@ def save_to_mongodb(fines_data, total_amount):
         print("\nConnecting to MongoDB...")
         client = MongoClient(MONGODB_URI)
         db = client[DB_NAME]
-        
-        # Collections
         fines_collection = db['rta_fines']
         total_collection = db['rta_total']
-        
-        # Save individual fines (avoid duplicates)
         saved_count = 0
-        duplicate_count = 0
-        
+        updated_count = 0
         for fine in fines_data:
-            # Check if record already exists (based on vehicle info, date_time, and amount)
+            # Check if record already exists (based on vehicle info, date_time, amount, and number_plate)
             existing = fines_collection.find_one({
                 "vehicle_info": fine["vehicle_info"],
                 "date_time": fine["date_time"],
-                "amount": fine["amount"]
+                "amount": fine["amount"],
+                "number_plate": fine["number_plate"]
             })
-            
             if not existing:
-                fines_collection.insert_one(fine)
+                fines_collection.insert_one({
+                    "vehicle_info": fine["vehicle_info"],
+                    "date_time": fine["date_time"],
+                    "amount": fine["amount"],
+                    "number_plate": fine["number_plate"],
+                    "source": fine["source"],
+                    "black_points": fine["black_points"],
+                    "created_at": fine["created_at"]
+                })
                 saved_count += 1
-                print(f"Saved fine: {fine['vehicle_info']} - {fine['amount']}")
-            else:
-                duplicate_count += 1
-                print(f"Duplicate found, skipped: {fine['vehicle_info']} - {fine['amount']}")
-        
-        print(f"\nTotal saved: {saved_count}, Duplicates skipped: {duplicate_count}")
-        
-        # Update total amount (upsert - update if exists, insert if not)
+                print(f"Saved new fine: {fine['number_plate']}")
+        print(f"\nTotal saved: {saved_count}, Total updated: {updated_count}")
+        # Update total amount (upsert)
         total_collection.update_one(
             {"type": "total_fines"},
-            {
-                "$set": {
-                    "total_amount": total_amount,
-                    "last_updated": datetime.utcnow()
-                }
-            },
+            {"$set": {"total_amount": total_amount, "last_updated": datetime.utcnow()}},
             upsert=True
         )
         print(f"Total amount updated: {total_amount}")
-        
         print("MongoDB operations completed successfully!")
-        
     except Exception as e:
         print(f"MongoDB error: {str(e)}")
     finally:
@@ -168,7 +159,7 @@ def automate_rta_violations(headless=True):
         input_field = wait.until(EC.presence_of_element_located((By.ID, "Id_trafficFileNumber")))
         print("Entering traffic file number...")
         input_field.clear()
-        input_field.send_keys("51563245")
+        input_field.send_keys("51563247")
         print("Traffic file number entered successfully!")
         
         # Click the search button
@@ -190,37 +181,53 @@ def automate_rta_violations(headless=True):
         pay_all_text = pay_all_element.text
         print(f"Text from Id_PayAll: {pay_all_text}")
         
-        # Find and fetch data from the table row
-        print("Finding table data element...")
-        table_selector = "#Id_FinesResultTable > div.p-datatable-wrapper > table > tbody > tr:nth-child(1) > td:nth-child(2) > div"
-        table_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, table_selector)))
-        table_data = table_element.text
-        print(f"Row 1 data: {table_data}")
-        
-        # Find and fetch data from the second table row
-        print("\nFinding second table row data...")
-        table_selector_2 = "#Id_FinesResultTable > div.p-datatable-wrapper > table > tbody > tr:nth-child(2) > td:nth-child(2) > div"
-        table_element_2 = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, table_selector_2)))
-        table_data_2 = table_element_2.text
-        print(f"Row 2 data: {table_data_2}")
-        
-        # Find and fetch data from the third table row
-        print("\nFinding third table row data...")
-        table_selector_3 = "#Id_FinesResultTable > div.p-datatable-wrapper > table > tbody > tr:nth-child(3) > td:nth-child(2) > div"
-        table_element_3 = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, table_selector_3)))
-        table_data_3 = table_element_3.text
-        print(f"Row 3 data: {table_data_3}")
-        
-        # Parse and save data to MongoDB
-        fines_data = [
-            parse_fine_data(table_data),
-            parse_fine_data(table_data_2),
-            parse_fine_data(table_data_3)
-        ]
-        
+        # Find all elements with class 'finesRowList'
+        print("Finding all finesRowList elements...")
+        rows = driver.find_elements(By.CLASS_NAME, "finesRowList")
+        fines_data = []
+        for idx, row in enumerate(rows, start=1):
+            try:
+                # Scroll into view and click using JS
+                print(f"Clicking finesRowList {idx}...")
+                driver.execute_script("arguments[0].scrollIntoView(true);", row)
+                time.sleep(1)
+                driver.execute_script("arguments[0].click();", row)
+                time.sleep(2)  # Wait for NumberPlate to update
+                # Fetch vehicle_info directly from first child div
+                vehicle_info = row.find_element(By.XPATH, './div[1]').text
+                # Extract date_time, amount, source, black_points from finesRowList children
+                def extract_value(div_idx):
+                    try:
+                        div = row.find_element(By.XPATH, f'./div[{div_idx}]')
+                        spans = div.find_elements(By.TAG_NAME, 'span')
+                        if spans:
+                            return div.text.replace(spans[0].text, '').strip()
+                        return div.text.strip()
+                    except Exception:
+                        return ''
+                date_time = extract_value(2)
+                amount = extract_value(3)
+                source = extract_value(4)
+                black_points = extract_value(5)
+                # Fetch NumberPlate data
+                number_plate_selector = "#root > div > div > div.container.umsPortal > div > div > div > div > div.fine_Violations > div.row.fines_violation_list > div.col-sm-12.col-md-12.col-lg-4.viewDetails > div.vInfo > div > div"
+                number_plate_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, number_plate_selector)))
+                number_plate_text = number_plate_element.text
+                print(f"NumberPlate data for finesRowList {idx}: {number_plate_text}")
+                # Combine all data for this row
+                fines_data.append({
+                    "number_plate": number_plate_text,
+                    "vehicle_info": vehicle_info,
+                    "date_time": date_time,
+                    "amount": amount,
+                    "source": source,
+                    "black_points": black_points,
+                    "created_at": datetime.now()
+                })
+            except Exception as e:
+                print(f"Error processing finesRowList {idx}: {str(e)}")
+        # Save to MongoDB
         save_to_mongodb(fines_data, pay_all_text)
-        
-        # Keep browser open for a few seconds to see the result
         time.sleep(5)
         
     except TimeoutException:
@@ -236,4 +243,4 @@ def automate_rta_violations(headless=True):
         driver.quit()
 
 if __name__ == "__main__":
-    automate_rta_violations()
+    automate_rta_violations(headless=False)
