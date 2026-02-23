@@ -40,14 +40,13 @@ def parse_fine_data(raw_text):
         "created_at": datetime.now()
     }
 
-def save_to_mongodb(fines_data, total_amount):
+def save_to_mongodb(fines_data, total_amount, traffic_file_key):
     """
-    Save fines records and total amount to MongoDB
+    Save fines records and total amount to MongoDB, with traffic_file_key
     """
     # MongoDB Configuration
     MONGODB_URI = "mongodb+srv://devxulfiqar:nSISUpLopruL7S8j@mypaperlessoffice.z5g84.mongodb.net/?retryWrites=true&w=majority&appName=mypaperlessoffice"
     DB_NAME = "fleet-management"
-    
     try:
         # Connect to MongoDB
         print("\nConnecting to MongoDB...")
@@ -58,12 +57,13 @@ def save_to_mongodb(fines_data, total_amount):
         saved_count = 0
         updated_count = 0
         for fine in fines_data:
-            # Check if record already exists (based on vehicle info, date_time, amount, and number_plate)
+            # Check if record already exists (based on vehicle info, date_time, amount, number_plate, and traffic_file_key)
             existing = fines_collection.find_one({
                 "vehicle_info": fine["vehicle_info"],
                 "date_time": fine["date_time"],
                 "amount": fine["amount"],
-                "number_plate": fine["number_plate"]
+                "number_plate": fine["number_plate"],
+                "traffic_file_key": traffic_file_key
             })
             if not existing:
                 fines_collection.insert_one({
@@ -73,18 +73,19 @@ def save_to_mongodb(fines_data, total_amount):
                     "number_plate": fine["number_plate"],
                     "source": fine["source"],
                     "black_points": fine["black_points"],
-                    "created_at": fine["created_at"]
+                    "created_at": fine["created_at"],
+                    "traffic_file_key": traffic_file_key
                 })
                 saved_count += 1
-                print(f"Saved new fine: {fine['number_plate']}")
+                print(f"Saved new fine: {fine['number_plate']} (traffic_file_key: {traffic_file_key})")
         print(f"\nTotal saved: {saved_count}, Total updated: {updated_count}")
-        # Update total amount (upsert)
+        # Update total amount (upsert) for this traffic_file_key
         total_collection.update_one(
-            {"type": "total_fines"},
-            {"$set": {"total_amount": total_amount, "last_updated": datetime.utcnow()}},
+            {"type": "total_fines", "traffic_file_key": traffic_file_key},
+            {"$set": {"total_amount": total_amount, "last_updated": datetime.utcnow(), "traffic_file_key": traffic_file_key}},
             upsert=True
         )
-        print(f"Total amount updated: {total_amount}")
+        print(f"Total amount updated for {traffic_file_key}: {total_amount}")
         print("MongoDB operations completed successfully!")
     except Exception as e:
         print(f"MongoDB error: {str(e)}")
@@ -117,130 +118,121 @@ def automate_rta_violations(headless=True):
     else:
         print("Running in NORMAL mode (visible browser)")
     
-    driver = webdriver.Chrome(options=chrome_options)
-    
-    # Remove webdriver property to avoid detection
-    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-        'source': '''
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            })
-        '''
-    })
-    
-    try:
-        # Open the URL
-        url = "https://ums.rta.ae/violations/public-fines/fines-search"
-        print(f"Opening URL: {url}")
-        driver.get(url)
-        
-        # Wait for the page to load
-        print("Waiting for page to load...")
-        time.sleep(10)  # Increased wait for headless mode
-        
-        # CSS Selector for the target element
-        css_selector = "#root > div > div > div.container.umsPortal > div > div > div > div > div.slick-slider.slick-initialized > div > div > div:nth-child(4) > div > div > span"
-        
-        # Wait for the element to be clickable
-        print("Waiting for element to be clickable...")
-        wait = WebDriverWait(driver, 30)
-        element = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, css_selector)))
-        
-        # Click the element
-        print("Clicking the element...")
-        element.click()
-        print("Element clicked successfully!")
-        
-        # Wait for the input field to appear
-        print("Waiting for traffic file number input field...")
-        time.sleep(3)
-        
-        # Find the input field and enter the traffic file number
-        input_field = wait.until(EC.presence_of_element_located((By.ID, "Id_trafficFileNumber")))
-        print("Entering traffic file number...")
-        input_field.clear()
-        input_field.send_keys("51563245")
-        print("Traffic file number entered successfully!")
-        
-        # Click the search button
-        print("Clicking search button...")
-        search_button = wait.until(EC.element_to_be_clickable((By.ID, "Id_searchBTN")))
-        # Scroll to button and use JavaScript click to avoid interception
-        driver.execute_script("arguments[0].scrollIntoView(true);", search_button)
-        time.sleep(1)
-        driver.execute_script("arguments[0].click();", search_button)
-        print("Search button clicked successfully!")
-        
-        # Wait for the results page to load
-        print("Waiting for results page to load...")
-        time.sleep(5)
-        
-        # Find and fetch text from Id_PayAll element
-        print("Finding Id_PayAll element...")
-        pay_all_element = wait.until(EC.presence_of_element_located((By.ID, "Id_PayAll")))
-        pay_all_text = pay_all_element.text
-        print(f"Text from Id_PayAll: {pay_all_text}")
-        
-        # Find all elements with class 'finesRowList'
-        print("Finding all finesRowList elements...")
-        rows = driver.find_elements(By.CLASS_NAME, "finesRowList")
-        fines_data = []
-        for idx, row in enumerate(rows, start=1):
-            try:
-                # Scroll into view and click using JS
-                print(f"Clicking finesRowList {idx}...")
-                driver.execute_script("arguments[0].scrollIntoView(true);", row)
-                time.sleep(1)
-                driver.execute_script("arguments[0].click();", row)
-                time.sleep(2)  # Wait for NumberPlate to update
-                # Fetch vehicle_info directly from first child div
-                vehicle_info = row.find_element(By.XPATH, './div[1]').text
-                # Extract date_time, amount, source, black_points from finesRowList children
-                def extract_value(div_idx):
-                    try:
-                        div = row.find_element(By.XPATH, f'./div[{div_idx}]')
-                        spans = div.find_elements(By.TAG_NAME, 'span')
-                        if spans:
-                            return div.text.replace(spans[0].text, '').strip()
-                        return div.text.strip()
-                    except Exception:
-                        return ''
-                date_time = extract_value(2)
-                amount = extract_value(3)
-                source = extract_value(4)
-                black_points = extract_value(5)
-                # Fetch NumberPlate data
-                number_plate_selector = "#root > div > div > div.container.umsPortal > div > div > div > div > div.fine_Violations > div.row.fines_violation_list > div.col-sm-12.col-md-12.col-lg-4.viewDetails > div.vInfo > div > div"
-                number_plate_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, number_plate_selector)))
-                number_plate_text = number_plate_element.text
-                print(f"NumberPlate data for finesRowList {idx}: {number_plate_text}")
-                # Combine all data for this row
-                fines_data.append({
-                    "number_plate": number_plate_text,
-                    "vehicle_info": vehicle_info,
-                    "date_time": date_time,
-                    "amount": amount,
-                    "source": source,
-                    "black_points": black_points,
-                    "created_at": datetime.now()
+    # Settings: comma-separated traffic file numbers from settings.py
+    from settings import TRAFFIC_FILE_KEYS
+    traffic_file_keys = [k.strip() for k in TRAFFIC_FILE_KEYS.split(",") if k.strip()]
+
+    for traffic_file_key in traffic_file_keys:
+        driver = webdriver.Chrome(options=chrome_options)
+        # Remove webdriver property to avoid detection
+        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            'source': '''
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
                 })
-            except Exception as e:
-                print(f"Error processing finesRowList {idx}: {str(e)}")
-        # Save to MongoDB
-        save_to_mongodb(fines_data, pay_all_text)
-        time.sleep(5)
-        
-    except TimeoutException:
-        print("Error: Element not found within the timeout period")
-        print("The page structure might have changed or the element takes longer to load")
-        
-    except Exception as e:
-        print(f"An error occurred: {str(e)}")
-        
-    finally:
-        # Close the browser
-        print("Closing browser...")
-        driver.quit()
+            '''
+        })
+        try:
+            # Open the URL
+            url = "https://ums.rta.ae/violations/public-fines/fines-search"
+            print(f"Opening URL: {url}")
+            driver.get(url)
+            # Wait for the page to load
+            print("Waiting for page to load...")
+            time.sleep(10)  # Increased wait for headless mode
+            # CSS Selector for the target element
+            css_selector = "#root > div > div > div.container.umsPortal > div > div > div > div > div.slick-slider.slick-initialized > div > div > div:nth-child(4) > div > div > span"
+            # Wait for the element to be clickable
+            print("Waiting for element to be clickable...")
+            wait = WebDriverWait(driver, 30)
+            element = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, css_selector)))
+            # Click the element
+            print("Clicking the element...")
+            element.click()
+            print("Element clicked successfully!")
+            # Wait for the input field to appear
+            print("Waiting for traffic file number input field...")
+            time.sleep(3)
+            # Find the input field and enter the traffic file number
+            input_field = wait.until(EC.presence_of_element_located((By.ID, "Id_trafficFileNumber")))
+            print(f"Entering traffic file number: {traffic_file_key}")
+            input_field.clear()
+            input_field.send_keys(traffic_file_key)
+            print("Traffic file number entered successfully!")
+            # Click the search button
+            print("Clicking search button...")
+            search_button = wait.until(EC.element_to_be_clickable((By.ID, "Id_searchBTN")))
+            # Scroll to button and use JavaScript click to avoid interception
+            driver.execute_script("arguments[0].scrollIntoView(true);", search_button)
+            time.sleep(1)
+            driver.execute_script("arguments[0].click();", search_button)
+            print("Search button clicked successfully!")
+            # Wait for the results page to load
+            print("Waiting for results page to load...")
+            time.sleep(5)
+            # Find and fetch text from Id_PayAll element
+            print("Finding Id_PayAll element...")
+            pay_all_element = wait.until(EC.presence_of_element_located((By.ID, "Id_PayAll")))
+            pay_all_text = pay_all_element.text
+            print(f"Text from Id_PayAll: {pay_all_text}")
+            # Find all elements with class 'finesRowList'
+            print("Finding all finesRowList elements...")
+            rows = driver.find_elements(By.CLASS_NAME, "finesRowList")
+            fines_data = []
+            for idx, row in enumerate(rows, start=1):
+                try:
+                    # Scroll into view and click using JS
+                    print(f"Clicking finesRowList {idx}...")
+                    driver.execute_script("arguments[0].scrollIntoView(true);", row)
+                    time.sleep(1)
+                    driver.execute_script("arguments[0].click();", row)
+                    time.sleep(2)  # Wait for NumberPlate to update
+                    # Fetch vehicle_info directly from first child div
+                    vehicle_info = row.find_element(By.XPATH, './div[1]').text
+                    # Extract date_time, amount, source, black_points from finesRowList children
+                    def extract_value(div_idx):
+                        try:
+                            div = row.find_element(By.XPATH, f'./div[{div_idx}]')
+                            spans = div.find_elements(By.TAG_NAME, 'span')
+                            if spans:
+                                return div.text.replace(spans[0].text, '').strip()
+                            return div.text.strip()
+                        except Exception:
+                            return ''
+                    date_time = extract_value(2)
+                    amount = extract_value(3)
+                    source = extract_value(4)
+                    black_points = extract_value(5)
+                    # Fetch NumberPlate data
+                    number_plate_selector = "#root > div > div > div.container.umsPortal > div > div > div > div > div.fine_Violations > div.row.fines_violation_list > div.col-sm-12.col-md-12.col-lg-4.viewDetails > div.vInfo > div > div"
+                    number_plate_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, number_plate_selector)))
+                    number_plate_text = number_plate_element.text
+                    print(f"NumberPlate data for finesRowList {idx}: {number_plate_text}")
+                    # Combine all data for this row
+                    fines_data.append({
+                        "number_plate": number_plate_text,
+                        "vehicle_info": vehicle_info,
+                        "date_time": date_time,
+                        "amount": amount,
+                        "source": source,
+                        "black_points": black_points,
+                        "created_at": datetime.now(),
+                        "traffic_file_key": traffic_file_key
+                    })
+                except Exception as e:
+                    print(f"Error processing finesRowList {idx}: {str(e)}")
+            # Save to MongoDB with traffic_file_key
+            save_to_mongodb(fines_data, pay_all_text, traffic_file_key)
+            time.sleep(5)
+        except TimeoutException:
+            print("Error: Element not found within the timeout period")
+            print("The page structure might have changed or the element takes longer to load")
+        except Exception as e:
+            print(f"An error occurred: {str(e)}")
+        finally:
+            # Close the browser
+            print("Closing browser...")
+            driver.quit()
 
 if __name__ == "__main__":
     automate_rta_violations(headless=False)

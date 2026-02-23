@@ -10,7 +10,7 @@ echo Running automation in background...
 echo No browser window will appear.
 echo.
 
-F:\MyRepo\FetchFine\.venv\Scripts\python.exe F:\MyRepo\FetchFine\run_headless.py
+F:\MyRepo\FetchFine\.venv\Scripts\python.exe F:\MyRepo\FetchFine\run_visible.py
 
 echo.
 echo ========================================
