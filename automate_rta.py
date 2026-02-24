@@ -1,3 +1,57 @@
+
+
+def get_whatsapp_to_by_traffic_file_key(traffic_file_key):
+    """
+    Fetch WhatsApp number from companies collection for the given traffic_file_key.
+    Returns WhatsApp number in format 'whatsapp:+<number>' or None if not found.
+    """
+    from pymongo import MongoClient
+    MONGODB_URI = "mongodb+srv://devxulfiqar:nSISUpLopruL7S8j@mypaperlessoffice.z5g84.mongodb.net/?retryWrites=true&w=majority&appName=mypaperlessoffice"
+    DB_NAME = "fleet-management"
+    client = MongoClient(MONGODB_URI)
+    db = client[DB_NAME]
+    companies = db["companies"]
+    # Only check 'tcNumber' field for traffic_file_key
+    company = companies.find_one({"tcNumber": traffic_file_key})
+    client.close()
+    if company:
+        print(f"[LOG] Company found: {company}")
+        if "phone" in company:
+            phone = company["phone"].strip()
+            # Accept phone numbers with or without 'whatsapp:' prefix
+            if not phone.startswith("whatsapp:"):
+                # Remove any spaces or dashes
+                phone = phone.replace(" ", "").replace("-", "")
+                phone = f"whatsapp:{phone}"
+            print(f"[LOG] WhatsApp phone to use: {phone}")
+            return phone
+        else:
+            print(f"[LOG] No 'phone' field in company document for key {traffic_file_key}")
+    else:
+        print(f"[LOG] No company found for traffic_file_key: {traffic_file_key}")
+    return None
+from twilio.rest import Client
+
+def send_whatsapp_message(body, traffic_file_key):
+    """Send WhatsApp message using Twilio API. Uses settings.py for credentials and fetches WhatsApp number dynamically."""
+    from settings import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM
+    print(f"[LOG] Preparing to send WhatsApp message for traffic_file_key: {traffic_file_key}")
+    print(f"[LOG] Message body: {body}")
+    to_number = get_whatsapp_to_by_traffic_file_key(traffic_file_key)
+    if not to_number:
+        print(f"[LOG] No WhatsApp number found for traffic_file_key: {traffic_file_key}. Message not sent.")
+        return
+    try:
+        print(f"[LOG] Sending WhatsApp message to: {to_number}")
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            body=body,
+            from_=TWILIO_WHATSAPP_FROM,
+            to=to_number
+        )
+        print(f"[LOG] WhatsApp message sent: SID {message.sid}")
+    except Exception as e:
+        print(f"[LOG] Failed to send WhatsApp message: {e}")
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -79,6 +133,25 @@ def save_to_mongodb(fines_data, total_amount, traffic_file_key):
                 saved_count += 1
                 print(f"Saved new fine: {fine['number_plate']} (traffic_file_key: {traffic_file_key})")
         print(f"\nTotal saved: {saved_count}, Total updated: {updated_count}")
+        # Fetch previous total_amount for this traffic_file_key
+        prev_total_doc = total_collection.find_one({"type": "total_fines", "traffic_file_key": traffic_file_key})
+        prev_total_amount = prev_total_doc["total_amount"] if prev_total_doc and "total_amount" in prev_total_doc else None
+
+        # Compare and print if different
+        if prev_total_amount is not None and str(prev_total_amount) != str(total_amount):
+            print(f"[DIFFERENCE DETECTED] Previous total_amount for {traffic_file_key}: {prev_total_amount}")
+            print(f"[DIFFERENCE DETECTED] New total_amount for {traffic_file_key}: {total_amount}")
+            # Send WhatsApp notification
+            msg = (
+                f"RTA Fine Update for {traffic_file_key}:\n"
+                f"Previous total: {prev_total_amount}\n"
+                f"Current total: {total_amount}\n"
+                f"{'Fine paid or reduced.' if 'AED' in str(prev_total_amount) and 'AED' in str(total_amount) and int(re.sub(r'[^0-9]', '', str(total_amount))) < int(re.sub(r'[^0-9]', '', str(prev_total_amount))) else 'New fine detected or increased.'}"
+            )
+            send_whatsapp_message(msg, traffic_file_key)
+        elif prev_total_amount is None:
+            print(f"No previous total_amount found for {traffic_file_key}. Saving new value: {total_amount}")
+
         # Update total amount (upsert) for this traffic_file_key
         total_collection.update_one(
             {"type": "total_fines", "traffic_file_key": traffic_file_key},
